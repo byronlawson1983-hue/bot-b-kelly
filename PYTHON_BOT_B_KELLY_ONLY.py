@@ -40,6 +40,13 @@ RPC_ENDPOINT = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
 # Initialize wallet
 import base58
 wallet = Keypair.from_base58_string(PRIVATE_KEY)
+from solana.rpc.api import Client as SyncClient
+rpc_client = SyncClient(RPC_ENDPOINT)
+
+# Websocket for price feeds
+ws = None
+ws_global = None  # Global websocket connection
+latest_data = {}  # Store latest price data per mint
 client = AsyncClient(RPC_ENDPOINT)
 
 AMOUNT_1=0.001      # Test scout 1
@@ -51,8 +58,8 @@ TRAILING_PULLBACK=3
 
 
 # Bot B specific settings
-MIN_WALLET_BALANCE = 0.01  # Minimum SOL to keep in wallet
-KELLY_AMOUNT = 0.005
+MIN_WALLET_BALANCE = 0.001  # Minimum SOL to keep in wallet
+KELLY_AMOUNT = 0.0001
 bought_mints = set()
 should_restart = False
 current_position = None
@@ -66,6 +73,10 @@ real_approved_tokens = set()
 recycled_tokens = set()
 recycling_queued = False
 stats = {"test_trades": 0, "kelly_trades": 0, "real_trades": 0, "total_trades": 0, "recent_trades": []}
+latest_data = {}  # Track latest price data for monitoring
+VOLUME_DEATH_SECONDS = 10  # Dead token detection
+TIMEOUT_MIN = 10
+TIMEOUT_MAX = 15
 
 # Functions from Bot A
 
@@ -79,6 +90,20 @@ def emit(event, data):
 def emit(event, data):
     """Stub - Bot B doesn't emit events"""
     pass
+
+
+
+def instant_test_analysis(*args, **kwargs):
+    """Stub - not needed for Bot B"""
+    return False
+
+async def subscribe_to_token(mint):
+    global ws_global
+    if ws_global:
+        try:
+            await ws_global.send(json.dumps({"method":"subscribeTokenTrade","keys":[mint]}))
+            logger.info(f"📡 Subscribed to {mint[:8]}...")
+        except:pass
 
 def get_balance():
     """Get wallet SOL balance"""
@@ -113,78 +138,15 @@ async def send_with_retry(tx, max_retries=3):
 
 async def buy(mint,name,bonding,mc,creator,kelly=False):
     global current_position,trades_in_cycle,should_restart,current_cycle_token
-    # Note: current_position declared global at function start
     
-    if current_position and current_position.get("trade_type") == "REAL":return False
+    # BOT B: ALWAYS KELLY
+    trade_type = "KELLY"
+    base_amount = KELLY_AMOUNT
     
-    # Block if this mint already has any active position (including TEST)
-    if current_position and current_position.get("mint") == mint:
-        logger.info(f"🛑 BLOCKED: Position already exists for {mint[:8]}")
-        return False
-    if should_restart:return False
-    if mint in token_blacklist:
-        logger.info(f"🚫 BLACKLISTED: {name}")
-        return False
-    if not check_dev_wallet(creator):return False
-    
-
-    
-    balance=get_balance()
-    if balance<MIN_WALLET_BALANCE:
-        logger.error(f"🛑 WALLET SAFETY: {balance:.4f} SOL < {MIN_WALLET_BALANCE} SOL")
-        return False
-    
-    # CYCLE LOGIC: TEST first, if passes immediately do REAL on same token
-    if mint in test_approved_tokens:
-        # This is a REAL buy triggered after test 2 passed
-        base_amount=AMOUNT_3
-        trade_type="REAL"
-        if mint in real_buy_triggered:
-            logger.info(f"🛑 DOUBLE BUY BLOCKED: {mint[:8]}")
-            return False
-        real_buy_triggered.add(mint)
-        stats["real_trades"]+=1
-        test_approved_tokens.discard(mint)
-    elif mint in kelly_approved_tokens:
-        # KELLY CRITERION: High conviction
-        base_amount=random.uniform(0.005, 0.007)
-        trade_type="KELLY"
-        stats["real_trades"]+=1
-        kelly_approved_tokens.discard(mint)
-    elif mint in test2_approved_tokens:
-        # This is TEST2 triggered after test 1 passed
-        # If this token is in recycling loop, use Kelly-sized amount
-        if mint in recycled_tokens:
-            base_amount=0.005  # Recycled TEST2 uses high conviction amount
-            trade_type="TEST2"
-            logger.info(f"🔄 RECYCLED TEST2 @ 0.005 SOL")
-        else:
-            base_amount=AMOUNT_2  # New token uses standard TEST2 amount
-            trade_type="TEST2"
-        stats["test_trades"]+=1
-        test2_approved_tokens.discard(mint)
-    else:
-        # TEST buy - check if recycled or new token
-        # If this token is in recycling loop, use Kelly-sized amount
-        if mint in recycled_tokens:
-            base_amount=0.005  # Recycled TEST1 uses high conviction amount
-            trade_type="TEST1"
-            logger.info(f"🔄 RECYCLED TEST1 @ 0.005 SOL")
-        else:
-            base_amount=AMOUNT_1  # New token uses scout amount
-            trade_type="TEST1"
-        stats["test_trades"]+=1
-        current_cycle_token=mint
-    
-    # Randomization
-    amount=base_amount*random.uniform(0.95,1.05)
-    if trade_type not in ["REAL", "KELLY"]:
-        await asyncio.sleep(random.uniform(0.1,2.0))
-    
-    logger.info(f"💰 {trade_type} BUY: {name} @ {bonding:.1f}% | {amount:.6f} SOL")
+    logger.info(f"💰 KELLY BUY: {name} @ {bonding}% | {base_amount:.6f} SOL")
     
     try:
-        payload={"publicKey":str(wallet.pubkey()),"action":"buy","mint":mint,"amount":amount,"denominatedInSol":"true","slippage": 100,"priorityFee":0.0001,"pool":"auto"}
+        payload={"publicKey":str(wallet.pubkey()),"action":"buy","mint":mint,"amount":base_amount,"denominatedInSol":"true","slippage": 100,"priorityFee":0.0001,"pool":"auto"}
         r=requests.post("https://pumpportal.fun/api/trade-local",json=payload,timeout=10)
         
         if r.status_code!=200:return False
@@ -201,6 +163,9 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
         if result:
             sig = result if isinstance(result, str) else str(result.value)
             logger.info(f"✅ BOUGHT: {sig[:8]} | Mint: {mint}")
+            
+            # Subscribe to websocket for price data
+            await subscribe_to_token(mint)
             
             # Monitor this position
             asyncio.create_task(monitor(mint))
@@ -266,21 +231,21 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
                 "peak_pnl":0,
                 "last_trade_time":time.time(),
                 "timeout":timeout,
-                "amount":amount,
+                "amount":base_amount,
                 "trade_type":trade_type
             }
             
             stats["total_trades"]+=1
-            stats["recent_trades"].insert(0,{"type":"BUY","name":name,"bonding":bonding,"amount":amount,"trade_type":trade_type})
+            stats["recent_trades"].insert(0,{"type":"BUY","name":name,"bonding":bonding,"amount":base_amount,"trade_type":trade_type})
             stats["recent_trades"]=stats["recent_trades"][:20]
-            emit()
+            # emit() - disabled
             
             await subscribe_to_token(mint)
             
             # For TEST positions, do instant analysis before monitoring
             if trade_type in ["TEST1", "TEST2"]:
                 await asyncio.sleep(0.5)  # Brief wait for WebSocket to update
-                await instant_test_analysis(mint, name, trade_type, bonding, creator)
+                instant_test_analysis(mint, name, trade_type, bonding, creator)
                 # If instant_test_analysis cleared position, don't start monitor
                 if not current_position or current_position["mint"] != mint:
                     return True
@@ -291,6 +256,8 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
     except Exception as e:
         logger.error(f"❌ {e}")
     return False
+
+
 
 
 
@@ -365,8 +332,6 @@ async def sell(mint, reason, position_data=None):
     except Exception as e:
         logger.error(f"❌ All methods failed: {str(e)[:50]}")
         return False
-
-
 
 
 
@@ -630,7 +595,7 @@ async def monitor(mint):
                 # Then trigger next stage
                 # Clear position before triggering next stage
                 current_position = None
-                emit()
+                # emit() - disabled
                 # Pause to ensure position fully clears
                 await asyncio.sleep(3)
                 if p["trade_type"]=="TEST1":
@@ -668,14 +633,55 @@ async def monitor(mint):
             
             # Clear position
             current_position = None
-            emit()
+            # emit() - disabled
             return  # Exit monitor after clearing position
 
 
 # Bot B main logic
+
+
 async def watch_signals():
     """Watch signal file and buy Kelly when Bot A signals"""
+    global ws_global, latest_data
     logger.info("BOT B: Watching for signals...")
+    
+    # Start background task to read websocket messages
+    async def read_websocket():
+        global ws_global, latest_data
+        while True:
+            try:
+                if ws_global:
+                    async for msg in ws_global:
+                        try:
+                            d = json.loads(msg)
+                            mint = d.get('mint')
+                            logger.debug(f"📨 WS MSG: {mint[:8] if mint else 'no-mint'}")
+                            if not mint:
+                                continue
+                            
+                            mc = d.get('marketCapSol', 0)
+                            v_sol = d.get('vSolInBondingCurve', 0)
+                            bonding = min(100, (v_sol / 85) * 100) if v_sol > 0 else 0
+                            
+                            latest_data[mint] = {
+                                'mint': mint,
+                                'marketCapSol': mc,
+                                'name': d.get('name', mint[:8]),
+                                'progress': bonding,
+                                'vSol': v_sol,
+                                'vTokens': d.get('vTokensInBondingCurve', 1)
+                            }
+                            logger.debug(f"💾 Updated latest_data for {mint[:8]}: MC={mc:.4f}")
+                        except:
+                            pass
+                else:
+                    await asyncio.sleep(1)
+            except:
+                await asyncio.sleep(1)
+    
+    # Start websocket reader
+    asyncio.create_task(read_websocket())
+    logger.info("✅ Websocket reader started")
     
     while True:
         try:
@@ -705,6 +711,24 @@ async def watch_signals():
         await asyncio.sleep(0.5)
 
 async def main():
+    global ws_global
+    
+    # CLEAR OLD SIGNALS FIRST - before anything else
+    import json
+    try:
+        with open("/tmp/bot_signals.json", "w") as f:
+            json.dump({"signals": []}, f)
+        print("🧹 OLD SIGNALS CLEARED")
+    except:
+        pass
+    
+    # Connect to PumpPortal websocket
+    try:
+        ws_global = await websockets.connect("wss://pumpportal.fun/api/data")
+        logger.info("✅ Connected to PumpPortal websocket")
+    except Exception as e:
+        logger.error(f"❌ Websocket connection failed: {e}")
+    
     logger.info("BOT B - KELLY FOLLOWER")
     logger.info(f"Kelly: {KELLY_AMOUNT} SOL")
     logger.info(f"Trail: +{TRAILING_STOP_TRIGGER}% | SL: {STOP_LOSS_PCT}%")
