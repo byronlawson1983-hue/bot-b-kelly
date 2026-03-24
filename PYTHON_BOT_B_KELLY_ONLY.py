@@ -251,7 +251,7 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
                     return True
             
             # Start monitoring immediately (no settlement wait)
-            asyncio.create_task(monitor(mint))
+            # REMOVED DUPLICATE MONITOR
             return True
     except Exception as e:
         logger.error(f"❌ {e}")
@@ -427,7 +427,7 @@ async def monitor(mint):
                                 p["timeout"] = 120  # 2 minutes for recycling
                                 logger.info(f"⏱️ Extended TEST1 timeout to 120s for recycling")
                             kelly_approved_tokens.add(mint)
-                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                             # Wait for Kelly to complete before TEST1 exits
                             while current_position and current_position.get("trade_type") == "KELLY":
                                 await asyncio.sleep(0.5)  # Wait for Kelly monitor
@@ -448,7 +448,7 @@ async def monitor(mint):
                                 await asyncio.sleep(6)  # Wait for previous sell to settle
                                 # Recycled TEST1 uses Kelly-sized amount (0.005 SOL) for high conviction
                                 recycled_tokens.add(mint)
-                                await buy(mint, p["name"], p["entry_bonding"], p["entry_mc"], p["creator"])
+                # DISABLED - Bot B only buys from signals                                await buy(mint, p["name"], p["entry_bonding"], p["entry_mc"], p["creator"])
                                 recycling_queued = False
                             else:
                                 logger.info(f'✋ {p["name"]} graduated or topped - moving on')
@@ -459,7 +459,7 @@ async def monitor(mint):
                                 p["timeout"] = 120  # 2 minutes for recycling
                                 logger.info(f"⏱️ Extended TEST1 timeout to 120s for recycling")
                             test_approved_tokens.add(mint)
-                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                             # Wait for REAL to complete before TEST1 exits
                             while current_position and current_position.get("trade_type") == "REAL":
                                 await asyncio.sleep(0.5)  # Wait for REAL monitor
@@ -480,18 +480,18 @@ async def monitor(mint):
                                 await asyncio.sleep(6)  # Wait for previous sell to settle
                                 # Recycled TEST1 uses Kelly-sized amount (0.005 SOL) for high conviction
                                 recycled_tokens.add(mint)
-                                await buy(mint, p["name"], p["entry_bonding"], p["entry_mc"], p["creator"])
+                # DISABLED - Bot B only buys from signals                                await buy(mint, p["name"], p["entry_bonding"], p["entry_mc"], p["creator"])
                                 recycling_queued = False
                             else:
                                 logger.info(f'✋ {p["name"]} graduated or topped - moving on')
                         else:
                             logger.info(f"🎯 TEST1 sold - triggering TEST2 buy")
                             test2_approved_tokens.add(mint)
-                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                     elif p.get("test2_approved") and p.get("trade_type") == "TEST2":
                         logger.info(f"🎯 TEST2 sold - triggering REAL buy")
                         test_approved_tokens.add(mint)
-                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                     
                     # Only count cycles when moving to NEW tokens, not recycling
                     if p.get("trade_type") in ["REAL", "KELLY"]:
@@ -583,7 +583,7 @@ async def monitor(mint):
                 logger.info(f'🔄 RECYCLING: {p["name"]} timed out but still viable!')
                 await asyncio.sleep(6)  # Wait for previous sell to settle
                 # Recycled TEST1 uses Kelly-sized amount (0.005 SOL) for high conviction
-                await buy(mint, p["name"], p.get("entry_bonding"), p.get("entry_mc"), p.get("creator"))
+                # DISABLED - Bot B only buys from signals                await buy(mint, p["name"], p.get("entry_bonding"), p.get("entry_mc"), p.get("creator"))
                 recycling_queued = False
         else:
             # TEST timeout - check if it passed based on peak
@@ -606,7 +606,7 @@ async def monitor(mint):
                             p["timeout"] = 120  # 2 minutes for recycling
                             logger.info(f"⏱️ Extended TEST1 timeout to 120s for recycling")
                         test_approved_tokens.add(mint)
-                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                     elif peak >= 25:
                         # Signal Bot B
                         try:
@@ -617,15 +617,15 @@ async def monitor(mint):
                         except: pass
                         logger.info(f"💎 KELLY BUY @ {peak:.1f}% - HIGH CONVICTION")
                         test_approved_tokens.add(mint)
-                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                     else:
                         logger.info(f"✅ TEST1 → TEST2")
                         test2_approved_tokens.add(mint)
-                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
                 elif p["trade_type"]=="TEST2":
                     logger.info(f"✅ TEST2 → REAL")
                     test_approved_tokens.add(mint)
-                    await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
+                # DISABLED - Bot B only buys from signals                    await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
             else:
                 logger.warning(f"❌ TEST FAILED: {p['name']} only reached +{peak:.1f}%")
                 # SELL THE FAILED TEST TOKENS
