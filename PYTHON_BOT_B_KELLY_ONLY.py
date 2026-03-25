@@ -363,12 +363,12 @@ async def monitor(mint):
         
         if d:
             last_data_time=time.time()
-            current_mc=d.get('marketCapSol',0)
-            entry_mc=p["entry_mc"]
+            current_bonding=d.get('progress',0)  # Bonding curve %
+            entry_bonding=p.get("entry_bonding",0)
             p["last_trade_time"]=time.time()
             
-            if current_mc>0 and entry_mc>0:
-                pnl=((current_mc-entry_mc)/entry_mc)*100
+            if current_bonding>0 and entry_bonding>0:
+                pnl=((current_bonding-entry_bonding)/entry_bonding)*100
                 
                 if pnl>p["peak_pnl"]:
                     p["peak_pnl"]=pnl
@@ -655,7 +655,7 @@ async def watch_signals():
                         try:
                             d = json.loads(msg)
                             mint = d.get('mint')
-                            logger.debug(f"📨 WS MSG: {mint[:8] if mint else 'no-mint'}")
+                            logger.info(f"📨 WS MSG: {mint[:8] if mint else 'no-mint'}")
                             if not mint:
                                 continue
                             
@@ -671,7 +671,7 @@ async def watch_signals():
                                 'vSol': v_sol,
                                 'vTokens': d.get('vTokensInBondingCurve', 1)
                             }
-                            logger.debug(f"💾 Updated latest_data for {mint[:8]}: MC={mc:.4f}")
+                            logger.info(f"💾 Updated latest_data for {mint[:8]}: MC={mc:.4f}")
                         except:
                             pass
                 else:
