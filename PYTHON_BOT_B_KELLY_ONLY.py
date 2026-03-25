@@ -645,6 +645,8 @@ async def watch_signals():
     global ws_global, latest_data
     logger.info("BOT B: Watching for signals...")
     
+    bought_mints = set()  # Track mints we've already bought
+    
     # Start background task to read websocket messages
     async def read_websocket():
         global ws_global, latest_data
@@ -701,8 +703,16 @@ async def watch_signals():
                 bought_mints.add(mint)
                 logger.info(f"⏰ ABOUT TO CALL BUY: {mint[:8]}")
                 # Get current bonding from latest_data if available
+                # Wait for websocket to have data for this mint (up to 5 seconds)
+                for i in range(50):
+                    if mint in latest_data and latest_data[mint].get('progress', 0) > 0:
+                        break
+                    await asyncio.sleep(0.1)
+                
                 current_bonding = latest_data.get(mint, {}).get('progress', 0)
+                logger.info(f"🎯 Entry bonding: {current_bonding:.1f}%")
                 result = await buy(mint, signal['name'], current_bonding, 0, "")
+                bought_mints.add(mint)  # Mark as bought
                 logger.info(f"✅ BUY RETURNED: {result}")
                 
         except Exception as e:
