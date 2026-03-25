@@ -655,6 +655,12 @@ async def watch_signals():
                 # Connect to PumpPortal's global feed for ALL new tokens
                 async with websockets.connect("wss://pumpportal.fun/api/data") as ws:
                     logger.info("🌐 Connected to PumpPortal websocket feed")
+                    
+                    # Subscribe to new token events
+                    subscribe = {"method": "subscribeNewToken"}
+                    await ws.send(json.dumps(subscribe))
+                    logger.info("✅ Subscribed to new tokens")
+                    
                     async for msg in ws:
                         try:
                             d = json.loads(msg)
@@ -676,10 +682,11 @@ async def watch_signals():
                                 'vTokens': d.get('vTokensInBondingCurve', 1)
                             }
                             logger.info(f"💾 Updated latest_data for {mint[:8]}: MC={mc:.4f}")
-                        except:
-                            pass
-            except:
-                await asyncio.sleep(1)
+                        except Exception as e:
+                            logger.error(f"❌ WS message parse error: {e}")
+            except Exception as e:
+                logger.error(f"❌ WS connection error: {e}")
+                await asyncio.sleep(5)
     
     # Start websocket reader
     asyncio.create_task(read_websocket())
