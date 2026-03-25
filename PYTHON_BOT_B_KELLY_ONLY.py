@@ -700,7 +700,9 @@ async def watch_signals():
                 
                 bought_mints.add(mint)
                 logger.info(f"⏰ ABOUT TO CALL BUY: {mint[:8]}")
-                result = await buy(mint, signal['name'], 0, 0, "")
+                # Get current bonding from latest_data if available
+                current_bonding = latest_data.get(mint, {}).get('progress', 0)
+                result = await buy(mint, signal['name'], current_bonding, 0, "")
                 logger.info(f"✅ BUY RETURNED: {result}")
                 
         except Exception as e:
