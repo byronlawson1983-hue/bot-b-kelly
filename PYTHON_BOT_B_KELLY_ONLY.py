@@ -652,8 +652,10 @@ async def watch_signals():
         global ws_global, latest_data
         while True:
             try:
-                if ws_global:
-                    async for msg in ws_global:
+                # Connect to PumpPortal's global feed for ALL new tokens
+                async with websockets.connect("wss://pumpportal.fun/api/data") as ws:
+                    logger.info("🌐 Connected to PumpPortal websocket feed")
+                    async for msg in ws:
                         try:
                             d = json.loads(msg)
                             mint = d.get('mint')
@@ -676,8 +678,6 @@ async def watch_signals():
                             logger.info(f"💾 Updated latest_data for {mint[:8]}: MC={mc:.4f}")
                         except:
                             pass
-                else:
-                    await asyncio.sleep(1)
             except:
                 await asyncio.sleep(1)
     
@@ -704,10 +704,16 @@ async def watch_signals():
                 logger.info(f"⏰ ABOUT TO CALL BUY: {mint[:8]}")
                 # Get current bonding from latest_data if available
                 # Wait for websocket to have data for this mint (up to 5 seconds)
+                logger.info(f"⏳ Waiting for websocket data for {mint[:8]}...")
                 for i in range(50):
-                    if mint in latest_data and latest_data[mint].get('progress', 0) > 0:
-                        break
+                    if mint in latest_data:
+                        progress = latest_data[mint].get('progress', 0)
+                        if progress > 0:
+                            logger.info(f"✅ Got data after {i/10:.1f}s: progress={progress:.1f}%")
+                            break
                     await asyncio.sleep(0.1)
+                else:
+                    logger.info(f"⚠️ Timeout waiting for data - latest_data keys: {list(latest_data.keys())[:3]}")
                 
                 current_bonding = latest_data.get(mint, {}).get('progress', 0)
                 logger.info(f"🎯 Entry bonding: {current_bonding:.1f}%")
