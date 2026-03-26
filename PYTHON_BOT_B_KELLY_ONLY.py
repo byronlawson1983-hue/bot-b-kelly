@@ -180,7 +180,7 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
                 # Check if position already exists (created early in monitor)
                 if not current_position:
                     # Recalculate timeout for KELLY/REAL (was calculated for TEST1)
-                    kelly_timeout = 30  # Quick exit if Bot A doesn't signal
+                    kelly_timeout = 15  # Quick exit - most signals come in 13-15s
                     current_position = {
                         "trade_type": trade_type,
                         "mint": mint,
