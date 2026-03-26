@@ -59,7 +59,7 @@ TRAILING_PULLBACK=3
 
 # Bot B specific settings
 MIN_WALLET_BALANCE = 0.001  # Minimum SOL to keep in wallet
-KELLY_AMOUNT = 0.01
+KELLY_AMOUNT = 0.013
 bought_mints = set()
 should_restart = False
 current_position = None
