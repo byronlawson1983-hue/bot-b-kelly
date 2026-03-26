@@ -59,7 +59,7 @@ TRAILING_PULLBACK=3
 
 # Bot B specific settings
 MIN_WALLET_BALANCE = 0.001  # Minimum SOL to keep in wallet
-KELLY_AMOUNT = 0.0001
+KELLY_AMOUNT = 0.01
 bought_mints = set()
 should_restart = False
 current_position = None
@@ -170,7 +170,7 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
             # Monitor this position
             asyncio.create_task(monitor(mint))
             
-            timeout=5 if trade_type == "TEST1" else (random.randint(2,3) if trade_type == "TEST2" else random.randint(TIMEOUT_MIN,TIMEOUT_MAX))
+            timeout= 120  # Match Bot A KELLY timeout
             
             # FORCE OVERRIDE for REAL buys - stop TEST monitor immediately
             if trade_type == "REAL":
@@ -180,7 +180,7 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
                 # Check if position already exists (created early in monitor)
                 if not current_position:
                     # Recalculate timeout for KELLY/REAL (was calculated for TEST1)
-                    kelly_timeout = random.randint(10, 15) if trade_type == "KELLY" else random.randint(TIMEOUT_MIN, TIMEOUT_MAX)
+                    kelly_timeout = 120  # Match Bot A KELLY timeout
                     current_position = {
                         "trade_type": trade_type,
                         "mint": mint,
@@ -336,310 +336,41 @@ async def sell(mint, reason, position_data=None):
 
 
 async def monitor(mint):
+    """Monitor position and watch for Bot A KELLY sell signal"""
     global current_position
-    global recycling_queued
     
-    if not current_position or current_position["mint"]!=mint:return
+    # Bot B uses current_position, not positions dict
+    if not current_position or current_position.get("mint") != mint:
+        return
     
-    p=current_position
-    logger.info(f"👁️ MONITOR: {p['name']} | Trail: +{TRAILING_STOP_TRIGGER}% | SL: {STOP_LOSS_PCT}% | Timeout: {p['timeout']}s")
+    p = current_position
     
-    start=time.time()
-    last_data_time=time.time()
+    logger.info(f"👁️ MONITOR: {p['name']} | Watching for Bot A KELLY sell signal | Timeout: {p['timeout']}s")
     
-    while current_position and current_position["mint"]==mint and time.time()-start<p["timeout"]:
-        # Exit immediately if this position was marked as sold
-        if p.get("sell_fired"):
-            logger.info(f"🛑 Monitor exiting: {p.get('name')} marked as sold")
-            return
-        
-        d=latest_data.get(mint)
-        
-        # No data at all after 3s and peak still 0% - dead token, skip fast
-        if not d and p.get("peak_pnl",0)<=0 and time.time()-last_data_time>3:
-            logger.warning(f"⏭️ NO DATA 3s: {p['name']} - skipping dead token")
-            await sell(mint,"NoData")
-            return
-        
-        if d:
-            last_data_time=time.time()
-            current_bonding=d.get('progress',0)  # Bonding curve %
-            entry_bonding=p.get("entry_bonding",0)
-            p["last_trade_time"]=time.time()
-            
-            if current_bonding>0 and entry_bonding>0:
-                pnl=((current_bonding-entry_bonding)/entry_bonding)*100
+    start_time = time.time()
+    
+    # Watch for Bot A's KELLY sell signal
+    while time.time() - start_time < p["timeout"]:
+        try:
+            with open("/tmp/bot_signals.json", "r") as f:
+                data = json.load(f)
+                sell_signals = data.get("sell_signals", [])
                 
-                if pnl>p["peak_pnl"]:
-                    p["peak_pnl"]=pnl
-                
-                if pnl>=TRAILING_STOP_TRIGGER and not p["trailing_stop_active"]:
-                    if p["trade_type"] in ["TEST1","TEST2"] and not p.get("test_triggered"):
-                        p["peak_pnl"]=pnl
-                        p["test_triggered"]=True
-                        logger.info(f"✅ TEST APPROVED: {p['name']} @ +{pnl:.1f}% - holding position")
-                        
-                        # Mark as approved but continue trailing to sell
-                        if p["trade_type"]=="TEST1":
-                            logger.info(f"✅ TEST1 PASSED: {p['name']} @ +{pnl:.1f}% - will sell then trigger TEST2")
-                            p["test1_approved"] = True
-                        elif p["trade_type"]=="TEST2":
-                            logger.info(f"✅ TEST2 PASSED: {p['name']} @ +{pnl:.1f}% - will sell then trigger REAL")
-                            p["test2_approved"] = True
-                        
-                    p["trailing_stop_active"]=True
-                    logger.info(f"🔒 TRAILING @ +{pnl:.1f}% (Peak: +{p['peak_pnl']:.1f}%)")
-                
-                if p["trailing_stop_active"] and pnl<=(p["peak_pnl"]-TRAILING_PULLBACK):
-                    logger.info(f"📉 TRAIL EXIT @ +{pnl:.1f}% (Peak: +{p['peak_pnl']:.1f}%)")
-                    if p.get("sell_fired"):
-                        logger.info(f"🔴 SELL BLOCKED: sell_fired already True for {p.get('name')}")
+                # Check if Bot A signaled to sell this mint
+                for sig in sell_signals:
+                    if sig.get("mint") == mint:
+                        logger.info(f"🔔 BOT A KELLY SOLD - FOLLOWING!")
+                        await sell(mint, "Bot A Exit")
                         return
-                    p["sell_fired"] = True
-                    p["exit_pnl"]=pnl
-                    
-                    # Sell first
-                    global should_restart, trades_in_cycle
-                    
-                    await sell(mint,f"Trail +{p['peak_pnl']:.1f}%")
-                    logger.info("🔍 DEBUG: Sell returned, about to return from monitor")
-                    
-                    # CRITICAL: Clear position BEFORE triggering next buy
-                    if current_position and current_position["mint"] == mint:
-                        current_position = None
-                        logger.info(f"✅ Position cleared, ready for next token")
-                    
-                    # After selling TEST, trigger next stage
-                    if p.get("test1_approved") and p.get("trade_type") == "TEST1":
-                        peak = p.get("peak_pnl", 0)
-                        if peak >= 25:
-                            # KELLY CRITERION: High conviction play
-                            logger.info(f"💎 KELLY BUY @ {peak:.1f}% - HIGH CONVICTION")
-                            # Signal Bot B
-                            try:
-                                import json as _j, time as _t
-                                with open("/tmp/bot_signals.json", "r+") as _f:
-                                    _d = _j.load(_f); _d["signals"].append({"mint":mint,"name":p["name"],"peak":peak,"ts":_t.time()}); _f.seek(0); _j.dump(_d,_f); _f.truncate()
-                                logger.info("📡 SIGNAL SENT")
-                            except: pass
-                            # Extend original TEST1 timeout to allow for recycling loops
-                            if p.get("trade_type") == "TEST1":
-                                p["timeout"] = 120  # 2 minutes for recycling
-                                logger.info(f"⏱️ Extended TEST1 timeout to 120s for recycling")
-                            kelly_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                            # Wait for Kelly to complete before TEST1 exits
-                            while current_position and current_position.get("trade_type") == "KELLY":
-                                await asyncio.sleep(0.5)  # Wait for Kelly monitor
-                            logger.info(f"✅ {p.get('trade_type')} completed - TEST1 can exit")
-                            # TOKEN RECYCLING: Test the same token again if still viable
-                            # Only recycle if didn't hit stop-loss (peak_pnl must be positive)
-                            # Calculate exit/peak ratio - only recycle if still pumping (exit close to peak)
-                            exit_pnl = p.get("exit_pnl", 0)
-                            peak_pnl = p.get("peak_pnl", 0)
-                            exit_ratio = exit_pnl / peak_pnl if peak_pnl > 0 else 0
-                            
-                            # Only recycle if: profitable AND exit within 15% of peak (still pumping)
-                            # No bonding check - tokens don't actually graduate on pump.fun
-                            if peak_pnl > 0 and exit_ratio >= 0.85:
-                                await asyncio.sleep(8)  # Wait for Kelly/REAL sell to fully settle before recycling
-                                recycling_queued = True  # Block new tokens
-                                logger.info(f'🔄 RECYCLING: {p["name"]} still pumping - testing again!')
-                                await asyncio.sleep(6)  # Wait for previous sell to settle
-                                # Recycled TEST1 uses Kelly-sized amount (0.005 SOL) for high conviction
-                                recycled_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                                await buy(mint, p["name"], p["entry_bonding"], p["entry_mc"], p["creator"])
-                                recycling_queued = False
-                            else:
-                                logger.info(f'✋ {p["name"]} graduated or topped - moving on')
-                        elif peak >= 15:
-                            logger.info(f"🚀 TEST1 ROCKET @ {peak:.1f}% - REAL BUY")
-                            # Extend original TEST1 timeout to allow for recycling
-                            if p.get("trade_type") == "TEST1":
-                                p["timeout"] = 120  # 2 minutes for recycling
-                                logger.info(f"⏱️ Extended TEST1 timeout to 120s for recycling")
-                            test_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                            # Wait for REAL to complete before TEST1 exits
-                            while current_position and current_position.get("trade_type") == "REAL":
-                                await asyncio.sleep(0.5)  # Wait for REAL monitor
-                            logger.info(f"✅ {p.get('trade_type')} completed - TEST1 can exit")
-                            # TOKEN RECYCLING: Test the same token again if still viable
-                            # Only recycle if didn't hit stop-loss (peak_pnl must be positive)
-                            # Calculate exit/peak ratio - only recycle if still pumping (exit close to peak)
-                            exit_pnl = p.get("exit_pnl", 0)
-                            peak_pnl = p.get("peak_pnl", 0)
-                            exit_ratio = exit_pnl / peak_pnl if peak_pnl > 0 else 0
-                            
-                            # Only recycle if: profitable AND exit within 15% of peak (still pumping)
-                            # No bonding check - tokens don't actually graduate on pump.fun
-                            if peak_pnl > 0 and exit_ratio >= 0.85:
-                                await asyncio.sleep(8)  # Wait for Kelly/REAL sell to fully settle before recycling
-                                recycling_queued = True  # Block new tokens
-                                logger.info(f'🔄 RECYCLING: {p["name"]} still pumping - testing again!')
-                                await asyncio.sleep(6)  # Wait for previous sell to settle
-                                # Recycled TEST1 uses Kelly-sized amount (0.005 SOL) for high conviction
-                                recycled_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                                await buy(mint, p["name"], p["entry_bonding"], p["entry_mc"], p["creator"])
-                                recycling_queued = False
-                            else:
-                                logger.info(f'✋ {p["name"]} graduated or topped - moving on')
-                        else:
-                            logger.info(f"🎯 TEST1 sold - triggering TEST2 buy")
-                            test2_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                            await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                    elif p.get("test2_approved") and p.get("trade_type") == "TEST2":
-                        logger.info(f"🎯 TEST2 sold - triggering REAL buy")
-                        test_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                    
-                    # Only count cycles when moving to NEW tokens, not recycling
-                    if p.get("trade_type") in ["REAL", "KELLY"]:
-                        # Check if we're about to recycle (bonding < 90%)
-                        if p.get("entry_bonding", 100) >= 90:
-                            # Token is done, count the cycle
-                            trades_in_cycle += 1
-                            should_restart = True
-                            logger.info(f"📊 Cycle: {trades_in_cycle}/{RESTART_AFTER_TRADES}")
-                        else:
-                            # Token will be recycled, don't count cycle yet
-                            logger.info(f"🔄 Recycling loop active - not counting cycle")
-                    
-                    return
-                
-                if p["trade_type"] in ["TEST1","TEST2"] and p["peak_pnl"]==0 and (time.time()-p["buy_time"])>2:
-                    logger.info(f"⚡ DEAD TOKEN: {p['name']} - instant exit")
-                    token_blacklist.add(mint)
-                    save_blacklist()
-                    sell_result = await sell(mint,"Dead 0%")
-                    # Blacklist this dead token
-                    token_blacklist.add(mint)
-                    logger.info(f"🚫 BLACKLISTED: {mint[:8]}... (dead token)")
-                    if sell_result:
-                        if current_position and current_position["mint"] == mint:
-                            current_position = None
-                    else:
-                        logger.error(f"❌ DEAD SELL FAILED: {mint[:8]}")
-                    return
-                if pnl<=STOP_LOSS_PCT:
-                    logger.info(f"🛑 SL: {p['name']} @ {pnl:.1f}%")
-                    # Blacklist stop-loss tokens - they're rugs, don't retest
-                    token_blacklist.add(mint)
-                    save_blacklist()
-                    logger.info(f"🚫 BLACKLISTED: {mint[:8]}... (stop-loss token)")
-                    sell_result = await sell(mint,f"SL {pnl:.1f}%")
-                    if sell_result:
-                        if current_position and current_position["mint"] == mint:
-                            current_position = None
-                    else:
-                        logger.error(f"❌ SL SELL FAILED: {mint[:8]}")
-                    return
-        
-        time_since_trade=time.time()-p["last_trade_time"]
-        if time_since_trade>=VOLUME_DEATH_SECONDS:
-            logger.warning(f"💀 VOLUME DEATH: {p['name']}")
-            await sell(mint,"Volume Death")
-            return
+        except:
+            pass
         
         await asyncio.sleep(0.5)
     
-    if current_position and current_position["mint"]==mint:
-        # Don't timeout REAL positions - they must sell via trailing stop
-        if p.get("trade_type") in ["REAL", "KELLY"]:
-            logger.info(f"💸 {p.get('trade_type')} TIMEOUT - FORCE SELLING: {p['name']}")
-            try:
-                await asyncio.wait_for(sell(mint, "REAL Timeout"), timeout=15.0)
-                return  # Exit after successful sell
-            except asyncio.TimeoutError:
-                logger.error(f"❌ Timeout sell hung - force exiting")
-                return  # Exit even if sell hangs
-            
-        if p.get("sell_fired"): return
-        p["sell_fired"] = True
-        logger.info(f"⏰ TIMEOUT: {p['name']}")
-        # FORCE SELL ALL TOKENS IN WALLET
-        import requests as _rq, base58 as _b58, struct as _st
-        from solders.transaction import VersionedTransaction as _VT
-        from solana.rpc.types import TokenAccountOpts
-        from solders.pubkey import Pubkey as _PKT
-        accs = rpc_client.get_token_accounts_by_owner(wallet.pubkey(), TokenAccountOpts(program_id=_PKT.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"))).value
-        for acc in accs:
-            data = acc.account.data
-            tmint = _b58.b58encode(data[0:32]).decode()
-            tamt = _st.unpack('<Q', data[64:72])[0]
-            if tamt > 0 and tmint.endswith("pump"):
-                try:
-                    tr = _rq.post("https://pumpportal.fun/api/trade-local", json={"publicKey": str(wallet.pubkey()), "action": "sell", "mint": tmint, "amount": "100%", "denominatedInSol": "false", "slippage": 100, "priorityFee": 0.0001, "pool": "pump"}, timeout=10)
-                    if tr.status_code == 200:
-                        tvtx = _VT.from_bytes(tr.content)
-                        tvtx = _VT(tvtx.message, [wallet])
-                        tsig = rpc_client.send_raw_transaction(bytes(tvtx), opts=TxOpts(skip_preflight=True)).value
-                        logger.info(f"💸 FORCE SOLD: {tmint[:8]} → {tsig}")
-                        await asyncio.sleep(0.5)
-                except: pass
-            # TOKEN RECYCLING after Kelly/REAL timeout
-            if p and p.get("trade_type") in ["KELLY", "REAL"] and p.get("entry_bonding", 100) < 90:
-                recycling_queued = True  # Block new tokens
-                logger.info(f'🔄 RECYCLING: {p["name"]} timed out but still viable!')
-                await asyncio.sleep(6)  # Wait for previous sell to settle
-                # Recycled TEST1 uses Kelly-sized amount (0.005 SOL) for high conviction
-                # DISABLED - Bot B only buys from signals                await buy(mint, p["name"], p.get("entry_bonding"), p.get("entry_mc"), p.get("creator"))
-                recycling_queued = False
-        else:
-            # TEST timeout - check if it passed based on peak
-            peak = p.get("peak_pnl", 0)
-            if peak >= 10:
-                logger.info(f"✅ TEST PASSED: {p['name']} peaked at +{peak:.1f}%")
-                # SELL THE PASSED TEST TOKENS FIRST
-                await sell(mint, f"Test passed {peak:.1f}%")
-                # Then trigger next stage
-                # Clear position before triggering next stage
-                current_position = None
-                # emit() - disabled
-                # Pause to ensure position fully clears
-                await asyncio.sleep(3)
-                if p["trade_type"]=="TEST1":
-                    if peak >= 30:
-                        logger.info(f"🚀 TEST1 ROCKET @ {peak:.1f}% - REAL BUY")
-                        # Extend original TEST1 timeout to allow for recycling
-                        if p.get("trade_type") == "TEST1":
-                            p["timeout"] = 120  # 2 minutes for recycling
-                            logger.info(f"⏱️ Extended TEST1 timeout to 120s for recycling")
-                        test_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                    elif peak >= 25:
-                        # Signal Bot B
-                        try:
-                            import json as _j, time as _t
-                            with open("/tmp/bot_signals.json", "r+") as _f:
-                                _d = _j.load(_f); _d["signals"].append({"mint":mint,"name":p["name"],"peak":peak,"ts":_t.time()}); _f.seek(0); _j.dump(_d,_f); _f.truncate()
-                            logger.info("📡 SIGNAL SENT")
-                        except: pass
-                        logger.info(f"💎 KELLY BUY @ {peak:.1f}% - HIGH CONVICTION")
-                        test_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                    else:
-                        logger.info(f"✅ TEST1 → TEST2")
-                        test2_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                        await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-                elif p["trade_type"]=="TEST2":
-                    logger.info(f"✅ TEST2 → REAL")
-                    test_approved_tokens.add(mint)
-                # DISABLED - Bot B only buys from signals                    await buy(mint,p['name'],p['entry_bonding'],p['entry_mc'],p['creator'])
-            else:
-                logger.warning(f"❌ TEST FAILED: {p['name']} only reached +{peak:.1f}%")
-                # SELL THE FAILED TEST TOKENS
-                await sell(mint, f"Test failed {peak:.1f}%")
-            
-            # Clear position
-            current_position = None
-            # emit() - disabled
-            return  # Exit monitor after clearing position
-
-
-# Bot B main logic
-
-
+    # Timeout - sell anyway
+    logger.info(f"💸 KELLY TIMEOUT - FORCE SELLING: {p['name']}")
+    await sell(mint, "REAL Timeout")
+    return
 async def watch_signals():
     """Watch signal file and buy Kelly when Bot A signals"""
     global ws_global, latest_data
