@@ -170,7 +170,7 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
             # Monitor this position
             asyncio.create_task(monitor(mint))
             
-            timeout= 120  # Match Bot A KELLY timeout
+            timeout= 15  # Bot B doesn't need 120s - no TEST positions
             
             # FORCE OVERRIDE for REAL buys - stop TEST monitor immediately
             if trade_type == "REAL":
