@@ -372,6 +372,14 @@ async def monitor(mint):
                         await sell(mint, "Real Peak Exit")
                         return
                 
+                # Check if Bot A KELLY timed out
+                kelly_timeout_signals = data.get("kelly_timeout_signals", [])
+                for sig in kelly_timeout_signals:
+                    if sig.get("mint") == mint:
+                        logger.info(f"⏰ BOT A KELLY TIMEOUT - SELLING!")
+                        await sell(mint, "Kelly Timeout Exit")
+                        return
+                
                 # Check if Bot A's TEST2 failed (abort!)
                 for sig in test2_fail_signals:
                     if sig.get("mint") == mint:
