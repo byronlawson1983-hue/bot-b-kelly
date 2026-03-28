@@ -402,6 +402,14 @@ async def monitor(mint):
                         logger.info(f"📡 BOT A TEST1 SOLD - FOLLOWING!")
                         await sell(mint, "Test1 Exit")
                         return
+                
+                # Check if Bot A's TEST2 sold (trail exit)
+                test2_sell_signals = data.get("test2_sell_signals", [])
+                for sig in test2_sell_signals:
+                    if sig.get("mint") == mint:
+                        logger.info(f"📡 BOT A TEST2 SOLD - FOLLOWING!")
+                        await sell(mint, "Test2 Exit")
+                        return
         except:
             pass
         
