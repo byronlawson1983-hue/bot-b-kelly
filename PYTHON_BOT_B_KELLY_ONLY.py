@@ -251,7 +251,7 @@ async def buy(mint,name,bonding,mc,creator,kelly=False):
                     return True
             
             # Start monitoring immediately (no settlement wait)
-            # REMOVED DUPLICATE MONITOR
+            await monitor(mint)
             return True
     except Exception as e:
         logger.error(f"❌ {e}")
@@ -358,18 +358,12 @@ async def monitor(mint):
                 real_buy_signals = data.get("real_buy_signals", [])
                 test2_fail_signals = data.get("test2_fail_signals", [])
                 
-                # Check if Bot A bought KELLY (peak reached!)
-                for sig in kelly_buy_signals:
-                    if sig.get("mint") == mint:
-                        logger.info(f"💎 BOT A KELLY BUY @ PEAK - SELLING!")
-                        await sell(mint, "Kelly Peak Exit")
-                        return
-                
-                # Check if Bot A bought REAL (peak reached!)
-                for sig in real_buy_signals:
-                    if sig.get("mint") == mint:
-                        logger.info(f"💎 BOT A REAL BUY @ PEAK - SELLING!")
-                        await sell(mint, "Real Peak Exit")
+                # Check if Bot A sold TEST1 (follow the trail exit)
+                test1_sell_signals = data.get("test1_sell_signals", [])
+                for sig in test1_sell_signals:
+                    if sig.get("mint") == mint and time.time() - sig.get("ts", 0) < 30:
+                        logger.info(f"📡 BOT A TEST1 SOLD - FOLLOWING!")
+                        await sell(mint, "Test1 Exit")
                         return
                 
                 # Check if Bot A KELLY timed out
@@ -409,6 +403,14 @@ async def monitor(mint):
                     if sig.get("mint") == mint:
                         logger.info(f"📡 BOT A TEST2 SOLD - FOLLOWING!")
                         await sell(mint, "Test2 Exit")
+                        return
+                
+                # Check if Bot A's REAL sold (trail exit)
+                real_sell_signals = data.get("real_sell_signals", [])
+                for sig in real_sell_signals:
+                    if sig.get("mint") == mint:
+                        logger.info(f"📡 BOT A REAL SOLD - FOLLOWING!")
+                        await sell(mint, "Real Exit")
                         return
         except:
             pass
@@ -521,7 +523,15 @@ async def main():
     import json
     try:
         with open("/tmp/bot_signals.json", "w") as f:
-            json.dump({"signals": []}, f)
+            json.dump({
+                "signals": [],
+                "test1_sell_signals": [],
+                "test2_sell_signals": [],
+                "kelly_buy_signals": [],
+                "real_buy_signals": [],
+                "test2_fail_signals": [],
+                "kelly_timeout_signals": []
+            }, f)
         print("🧹 OLD SIGNALS CLEARED")
     except:
         pass
