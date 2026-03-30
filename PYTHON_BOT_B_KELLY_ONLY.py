@@ -328,9 +328,13 @@ async def sell(mint, reason, position_data=None):
                 return True
         
         logger.error("❌ Both methods failed")
+        # Clear position even on failure so we don't get stuck
+        current_position = None
         return False
     except Exception as e:
         logger.error(f"❌ All methods failed: {str(e)[:50]}")
+        # Clear position even on failure so we don't get stuck
+        current_position = None
         return False
 
 
@@ -357,6 +361,11 @@ async def monitor(mint):
                 kelly_buy_signals = data.get("kelly_buy_signals", [])
                 real_buy_signals = data.get("real_buy_signals", [])
                 test2_fail_signals = data.get("test2_fail_signals", [])
+                
+                # Check if we still have a position before acting on signals
+                if not current_position or current_position.get("mint") != mint:
+                    logger.info(f"⚠️ No position on {mint[:8]}... - ignoring signals")
+                    return
                 
                 # Check if Bot A sold TEST1 (follow the trail exit)
                 test1_sell_signals = data.get("test1_sell_signals", [])
