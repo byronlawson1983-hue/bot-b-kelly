@@ -59,7 +59,7 @@ TRAILING_PULLBACK=3
 
 # Bot B specific settings
 MIN_WALLET_BALANCE = 0.001  # Minimum SOL to keep in wallet
-KELLY_AMOUNT = 0.04
+KELLY_AMOUNT = 0.013
 bought_mints = set()
 should_restart = False
 current_position = None
@@ -320,8 +320,8 @@ async def sell(mint, reason, position_data=None):
             
             if result.value:
                 sig = str(result.value)
-                logger.info(f"📤 Sell submitted: {sig[:16]}... waiting 3s for settlement")
-                await asyncio.sleep(3)  # Wait for transaction to actually execute
+                logger.info(f"📤 Sell submitted: {sig[:16]}... waiting 5s for settlement")
+                await asyncio.sleep(5)  # Wait for transaction to actually execute
                 
                 # Trust the settlement wait - return success
                 logger.info(f"✅ SOLD: {sig[:16]}... (settlement complete)")
