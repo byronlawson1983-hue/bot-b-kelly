@@ -1,3 +1,4 @@
+import random
 import asyncio
 import json
 import logging
@@ -146,10 +147,11 @@ async def sell(mint, reason):
 
 async def monitor(mint, name):
     """Monitor for Bot A's KELLY sell signal"""
-    logger.info(f"👁️ MONITOR: {name} | Watching for Bot A KELLY sell signal | Timeout: 15s")
+    timeout = random.choice([8, 15])
+    logger.info(f"👁️ MONITOR: {name} | Watching for Bot A KELLY sell signal | Timeout: {timeout}s")
     
     start = asyncio.get_event_loop().time()
-    while asyncio.get_event_loop().time() - start < 15:
+    while asyncio.get_event_loop().time() - start < timeout:
         try:
             if os.path.exists(SIGNAL_FILE):
                 with open(SIGNAL_FILE, 'r') as f:
@@ -225,25 +227,39 @@ async def watch_signals():
         await asyncio.sleep(0.1)
 
 async def websocket_listener():
-    """Listen to PumpPortal websocket for market data"""
+    """Listen to PumpPortal websocket for market data - crash-proof"""
     while True:
         try:
-            async with websockets.connect(WS_URL) as ws:
+            async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=10) as ws:
                 await ws.send(json.dumps({"method":"subscribeNewToken"}))
                 logger.info("✅ Connected to PumpPortal websocket")
                 
                 while True:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-                    
-                    if 'mint' in data:
-                        mint = data['mint']
-                        latest_data[mint[:8]] = {
-                            'mc': data.get('marketCap', 0) / 1000,
-                            'bonding': data.get('progress', 0)
-                        }
+                    try:
+                        msg = await ws.recv()
+                        data = json.loads(msg)
+                        
+                        if 'mint' in data:
+                            mint = data['mint']
+                            latest_data[mint[:8]] = {
+                                'mc': data.get('marketCap', 0) / 1000,
+                                'bonding': data.get('progress', 0)
+                            }
+                    except Exception as msg_error:
+                        logger.warning(f"WS message error: {msg_error}")
+                        continue
         except Exception as e:
-            logger.error(f"WS error: {e}")
+            logger.error(f"🚨 WS DISCONNECTED: {e}")
+            
+            # EMERGENCY SELL if we have a position
+            if current_position:
+                logger.warning(f"⚠️ EMERGENCY SELL: {current_position['name']} (websocket down)")
+                try:
+                    await sell(current_position['mint'], "WS disconnect")
+                except Exception as sell_err:
+                    logger.error(f"Emergency sell failed: {sell_err}")
+            
+            logger.info("Reconnecting in 5s...")
             await asyncio.sleep(5)
 
 async def main():
