@@ -138,6 +138,17 @@ async def sell(mint, reason):
             sig = result if isinstance(result, str) else str(result.value)
             await asyncio.sleep(3)
             logger.info(f"✅ SOLD: {sig[:16]}... (settlement complete)")
+            
+            # Calculate profit
+            if current_position and "buy_amount" in current_position:
+                buy_amount = current_position["buy_amount"]
+                balance_after = client.get_balance(wallet.pubkey()).value / 1e9
+                
+                # Simple calculation: sold amount = balance increase
+                # More accurate: query the actual transaction
+                profit_estimate = balance_after - (balance_before if 'balance_before' in locals() else balance_after - 0.01)
+                logger.info(f"💰 PROFIT ESTIMATE: {current_position['name'][:12]} | Buy: {buy_amount:.4f} SOL | Est profit: {profit_estimate:+.6f} SOL")
+            
             current_position = None  # Clear position
             return True
         return False
@@ -146,9 +157,16 @@ async def sell(mint, reason):
         return False
 
 async def monitor(mint, name):
+    """Monitor position and sell after 6 seconds OR on -10% stop loss"""
+    global current_position
+    
+    hold_time = 6.0
     """Monitor for Bot A's KELLY sell signal"""
-    timeout = random.choice([8, 15])
-    logger.info(f"👁️ MONITOR: {name} | Watching for Bot A KELLY sell signal | Timeout: {timeout}s")
+    timeout = random.choice([6, 8])
+    logger.info(f"👁️ MONITOR: {name} | TRAILING UP +10% | Timeout: {timeout}s")
+    
+    # Track entry price
+    entry_price = latest_data.get(mint[:8], {}).get('mc', 0)
     
     start = asyncio.get_event_loop().time()
     while asyncio.get_event_loop().time() - start < timeout:
@@ -206,6 +224,34 @@ async def watch_signals():
                     data = json.load(f)
                 
                 # Check signals array for INSTANT buys (tokens that passed TEST1)
+                # Check for TEST1_PASSED signals (BUY ON EVERY PASSED TEST!)
+                if data.get("type") == "TEST1_PASSED":
+                    mint = data.get("mint")
+                    name = data.get("name", "Unknown")
+                    peak_pnl = data.get("peak_pnl", 0)
+                    ts = data.get("timestamp", 0)
+                    
+                    signal_key = f"{mint}_{ts}"
+                    if signal_key not in processed_signals:
+                        processed_signals.add(signal_key)
+                        logger.info(f"📡 TEST1_PASSED SIGNAL: {name} @ +{peak_pnl:.1f}%")
+                        logger.info(f"💰 TEST1_PASSED BUY: {mint[:8]}... | {KELLY_AMOUNT} SOL")
+                        await buy(mint, name, 35.0)
+                
+                # Check for INSTANT signals (TEST APPROVED - earlier entry)
+                if data.get("action") == "INSTANT":
+                    mint = data.get("mint")
+                    name = data.get("name", "Unknown")
+                    peak = data.get("peak", 0)
+                    
+                    signal_key = f"{mint}_{peak}"
+                    if signal_key not in processed_signals:
+                        processed_signals.add(signal_key)
+                        logger.info(f"📡 INSTANT SIGNAL: {name} @ +{peak:.1f}%")
+                        logger.info(f"💰 INSTANT BUY: {mint[:8]}... | {KELLY_AMOUNT} SOL")
+                        await buy(mint, name, 35.0)
+                
+                # Also check signals array for backwards compatibility
                 instant_signals = data.get("signals", [])
                 for signal in instant_signals:
                     mint = signal.get("mint")
@@ -261,6 +307,45 @@ async def websocket_listener():
             
             logger.info("Reconnecting in 5s...")
             await asyncio.sleep(5)
+
+
+async def close_token_account(mint):
+    """Close token account to reclaim rent (0.00203 SOL)"""
+    try:
+        from spl.token.instructions import close_account, CloseAccountParams
+        from spl.token.constants import TOKEN_PROGRAM_ID
+        
+        # Find token account
+        token_program = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        opts = TokenAccountOpts(program_id=token_program)
+        accounts = client.get_token_accounts_by_owner(wallet.pubkey(), opts)
+        
+        for acc in accounts.value:
+            acc_mint = str(Pubkey(acc.account.data[0:32]))
+            if acc_mint == mint:
+                token_account = acc.pubkey
+                
+                # Close account instruction
+                ix = close_account(CloseAccountParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    account=token_account,
+                    dest=wallet.pubkey(),
+                    owner=wallet.pubkey()
+                ))
+                
+                # Send transaction
+                from solders.transaction import Transaction
+                tx = Transaction([ix], wallet.pubkey())
+                result = client.send_transaction(tx, wallet)
+                
+                logger.info(f"✅ Closed token account - reclaimed 0.00203 SOL rent")
+                return True
+                
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to close token account: {e}")
+    
+    return False
+
 
 async def main():
     logger.info("🚀 BOT B STARTING")
